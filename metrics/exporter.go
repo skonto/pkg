@@ -81,8 +81,6 @@ type ExporterOptions struct {
 	PrometheusHost string
 
 	// ConfigMap is the data from config map config-observability. Must be present.
-	// See https://github.com/knative/serving/blob/main/config/config-observability.yaml
-	// for details.
 	ConfigMap map[string]string
 
 	// A lister for Secrets to allow dynamic configuration of outgoing TLS client cert.
