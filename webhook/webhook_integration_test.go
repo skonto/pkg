@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	certresources "knative.dev/pkg/webhook/certificates/resources"
 	"net/http"
 	"strings"
 	"testing"
@@ -51,7 +52,7 @@ func createResource(name string) *pkgtest.Resource {
 const testTimeout = 10 * time.Second
 
 func TestMissingContentType(t *testing.T) {
-	wh, serverURL, ctx, cancel, err := testSetup(t)
+	wh, serverURL, ctx, cancel, err := testSetup(t, nil)
 	if err != nil {
 		t.Fatal("testSetup() =", err)
 	}
@@ -66,8 +67,7 @@ func TestMissingContentType(t *testing.T) {
 		}
 	}()
 
-	pollErr := waitForServerAvailable(t, serverURL, testTimeout)
-	if pollErr != nil {
+	if err = waitForServerAvailable(t, serverURL, testTimeout); err != nil {
 		t.Fatal("waitForServerAvailable() =", err)
 	}
 
@@ -104,8 +104,69 @@ func TestMissingContentType(t *testing.T) {
 	metricstest.CheckStatsNotReported(t, requestCountName, requestLatenciesName)
 }
 
+func TestMissingContentTypeCustomSecret(t *testing.T) {
+	defaultOptions := newCustomOptions()
+	certresources.MakeSecret = customSecretWithOverrides
+
+	wh, serverURL, ctx, cancel, err := testSetup(t, &defaultOptions)
+	if err != nil {
+		t.Fatal("testSetup() =", err)
+	}
+
+	eg, _ := errgroup.WithContext(ctx)
+	eg.Go(func() error { return wh.Run(ctx.Done()) })
+	wh.InformersHaveSynced()
+	defer func() {
+		cancel()
+		if err := eg.Wait(); err != nil {
+			t.Error("Unable to run controller:", err)
+		}
+	}()
+
+	pollErr := waitForServerAvailable(t, serverURL, testTimeout)
+	if pollErr != nil {
+		t.Fatal("waitForServerAvailable() =", err)
+	}
+
+	defer func() {
+		certresources.MakeSecret = certresources.MakeSecretInternal
+	}()
+
+	tlsClient, err := createSecureTLSClient(t, kubeclient.Get(ctx), &wh.Options)
+	if err != nil {
+		t.Fatal("createSecureTLSClient() =", err)
+	}
+
+	req, err := http.NewRequest("GET", fmt.Sprintf("https://%s", serverURL), nil)
+	if err != nil {
+		t.Fatal("http.NewRequest() =", err)
+	}
+
+	response, err := tlsClient.Do(req)
+	if err != nil {
+		t.Fatalf("Received %v error from server %s", err, serverURL)
+	}
+
+	if got, want := response.StatusCode, http.StatusUnsupportedMediaType; got != want {
+		t.Errorf("Response status code = %v, wanted %v", got, want)
+	}
+
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal("Failed to read response body", err)
+	}
+
+	if !strings.Contains(string(responseBody), "invalid Content-Type") {
+		t.Errorf("Response body to contain 'invalid Content-Type' , got = '%s'", string(responseBody))
+	}
+
+	// Stats are not reported for internal server errors
+	metricstest.CheckStatsNotReported(t, requestCountName, requestLatenciesName)
+}
+
 func testEmptyRequestBody(t *testing.T, controller interface{}) {
-	wh, serverURL, ctx, cancel, err := testSetup(t, controller)
+	wh, serverURL, ctx, cancel, err := testSetup(t, nil, controller)
 	if err != nil {
 		t.Fatal("testSetup() =", err)
 	}
@@ -191,14 +252,19 @@ func TestSetupWebhookHTTPServerError(t *testing.T) {
 	}
 }
 
-func testSetup(t *testing.T, acs ...interface{}) (*Webhook, string, context.Context, context.CancelFunc, error) {
+func testSetup(t *testing.T, options *Options, acs ...interface{}) (*Webhook, string, context.Context, context.CancelFunc, error) {
 	t.Helper()
 	port, err := newTestPort()
 	if err != nil {
 		return nil, "", nil, nil, err
 	}
 
-	defaultOpts := newDefaultOptions()
+	var defaultOpts Options
+	if options == nil {
+		defaultOpts = newDefaultOptions()
+	} else {
+		defaultOpts = *options
+	}
 	defaultOpts.Port = port
 	ctx, wh, cancel := newNonRunningTestWebhook(t, defaultOpts, acs...)
 

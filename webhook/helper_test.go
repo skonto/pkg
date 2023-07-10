@@ -194,16 +194,16 @@ func createTestConfigMap(t *testing.T, kubeClient kubernetes.Interface) error {
 func createSecureTLSClient(t *testing.T, kubeClient kubernetes.Interface, acOpts *Options) (*http.Client, error) {
 	t.Helper()
 	ctx := TestContextWithLogger(t)
-	secret, err := certresources.MakeSecret(ctx, acOpts.SecretName, system.Namespace(), acOpts.ServiceName)
+
+	secret, err := kubeClient.CoreV1().Secrets(system.Namespace()).Get(ctx, acOpts.SecretName, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
-	if _, err := kubeClient.CoreV1().Secrets(secret.Namespace).Create(context.Background(), secret, metav1.CreateOptions{}); err != nil {
-		return nil, err
-	}
 
-	serverKey := secret.Data[certresources.ServerKey]
-	serverCert := secret.Data[certresources.ServerCert]
+	sKey, sCert := certresources.GetSecretDataKeyNamesOrDefault(acOpts.ServerKey, acOpts.ServerCert)
+
+	serverKey := secret.Data[sKey]
+	serverCert := secret.Data[sCert]
 	caCert := secret.Data[certresources.CACert]
 
 	// Build cert pool with CA Cert
@@ -233,4 +233,24 @@ func createNonTLSClient() *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{},
 	}
+}
+
+func customSecretWithOverrides(ctx context.Context, name, namespace, serviceName string) (*corev1.Secret, error) {
+	serverKey, serverCert, caCert, err := certresources.CreateCerts(ctx, serviceName, namespace, time.Now().Add(24*time.Hour))
+	if err != nil {
+		return nil, err
+	}
+	webOpts := GetOptions(ctx)
+	sKey, sCert := certresources.GetSecretDataKeyNamesOrDefault(webOpts.ServerKey, webOpts.ServerCert)
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Data: map[string][]byte{
+			sKey:                 serverKey,
+			sCert:                serverCert,
+			certresources.CACert: caCert,
+		},
+	}, nil
 }
