@@ -195,8 +195,15 @@ func createSecureTLSClient(t *testing.T, kubeClient kubernetes.Interface, acOpts
 	t.Helper()
 	ctx := TestContextWithLogger(t)
 
-	secret, err := kubeClient.CoreV1().Secrets(system.Namespace()).Get(ctx, acOpts.SecretName, metav1.GetOptions{})
+	if acOpts != nil {
+		ctx = WithOptions(ctx, *acOpts)
+	}
+
+	secret, err := certresources.MakeSecret(ctx, acOpts.SecretName, system.Namespace(), acOpts.ServiceName)
 	if err != nil {
+		return nil, err
+	}
+	if _, err := kubeClient.CoreV1().Secrets(secret.Namespace).Create(context.Background(), secret, metav1.CreateOptions{}); err != nil {
 		return nil, err
 	}
 
